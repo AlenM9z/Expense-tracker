@@ -1,7 +1,7 @@
 import streamlit as st
-import sqlite3
 from datetime import date
 from google import genai
+from supabase import create_client
 
 
 # =========================================================
@@ -16,29 +16,22 @@ st.set_page_config(
 
 
 # =========================================================
-# DATABASE
+# SUPABASE
 # =========================================================
 
-DB_FILE = "expenses.db"
+try:
 
-conn = sqlite3.connect(
-    DB_FILE,
-    check_same_thread=False
-)
+    supabase = create_client(
+        st.secrets["SUPABASE_URL"],
+        st.secrets["SUPABASE_KEY"]
+    )
 
-cursor = conn.cursor()
+    supabase_available = True
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS expenses (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    date TEXT NOT NULL,
-    category TEXT NOT NULL,
-    description TEXT,
-    amount REAL NOT NULL
-)
-""")
+except Exception:
 
-conn.commit()
+    supabase = None
+    supabase_available = False
 
 
 # =========================================================
@@ -60,28 +53,313 @@ except Exception:
 
 
 # =========================================================
-# FUNCTIONS
+# AUTHENTICATION
+# =========================================================
+
+if "user" not in st.session_state:
+    st.session_state.user = None
+
+if "access_token" not in st.session_state:
+    st.session_state.access_token = None
+
+if "refresh_token" not in st.session_state:
+    st.session_state.refresh_token = None
+    
+def login_user(email, password):
+
+    response = supabase.auth.sign_in_with_password({
+        "email": email,
+        "password": password
+    })
+
+    if response.session is None:
+        raise Exception("Supabase did not return a login session.")
+
+    st.session_state.user = response.user
+    st.session_state.access_token = response.session.access_token
+    st.session_state.refresh_token = response.session.refresh_token
+
+    supabase.auth.set_session(
+        response.session.access_token,
+        response.session.refresh_token
+    )
+    
+def signup_user(email, password):
+
+    response = supabase.auth.sign_up({
+        "email": email,
+        "password": password
+    })
+
+    if response.session is not None:
+
+        supabase.auth.set_session(
+            response.session.access_token,
+            response.session.refresh_token
+        )
+
+    return response
+# Restore Supabase session after Streamlit reruns
+
+if (
+    st.session_state.access_token
+    and st.session_state.refresh_token
+):
+
+    try:
+
+        supabase.auth.set_session(
+            st.session_state.access_token,
+            st.session_state.refresh_token
+        )
+
+    except Exception:
+
+        st.session_state.user = None
+        st.session_state.access_token = None
+        st.session_state.refresh_token = None
+        
+def logout_user():
+
+    try:
+        supabase.auth.sign_out()
+    except Exception:
+        pass
+
+    st.session_state.user = None
+    st.session_state.access_token = None
+    st.session_state.refresh_token = None
+
+    st.rerun()
+
+# =========================================================
+# CHECK SUPABASE
+# =========================================================
+
+if not supabase_available:
+
+    st.error(
+        "Supabase is not configured correctly."
+    )
+
+    st.stop()
+
+
+# =========================================================
+# LOGIN PAGE
+# =========================================================
+
+if st.session_state.user is None:
+
+    st.title("💰 My Expense Tracker")
+
+    st.write(
+        "Track your expenses privately and use Gemma "
+        "to analyze your spending."
+    )
+
+    login_tab, signup_tab = st.tabs(
+        ["🔐 Login", "📝 Create Account"]
+    )
+
+
+    # -----------------------------------------------------
+    # LOGIN
+    # -----------------------------------------------------
+
+    with login_tab:
+
+        st.subheader("Login")
+
+        login_email = st.text_input(
+            "Email",
+            key="login_email"
+        )
+
+        login_password = st.text_input(
+            "Password",
+            type="password",
+            key="login_password"
+        )
+
+        if st.button(
+            "Login",
+            type="primary",
+            key="login_button"
+        ):
+
+            if not login_email or not login_password:
+
+                st.warning(
+                    "Please enter your email and password."
+                )
+
+            else:
+
+                try:
+
+                    login_user(
+                        login_email,
+                        login_password
+                    )
+
+                    st.success(
+                        "Login successful!"
+                    )
+
+                    st.rerun()
+
+                except Exception as error:
+
+                    st.error(
+                        f"Login failed: {error}"
+                    )
+
+
+    # -----------------------------------------------------
+    # SIGN UP
+    # -----------------------------------------------------
+
+    with signup_tab:
+
+        st.subheader("Create Account")
+
+        signup_email = st.text_input(
+            "Email",
+            key="signup_email"
+        )
+
+        signup_password = st.text_input(
+            "Password",
+            type="password",
+            key="signup_password"
+        )
+
+        signup_password_confirm = st.text_input(
+            "Confirm Password",
+            type="password",
+            key="signup_password_confirm"
+        )
+
+        if st.button(
+            "Create Account",
+            type="primary",
+            key="signup_button"
+        ):
+
+            if not signup_email or not signup_password:
+
+                st.warning(
+                    "Please enter an email and password."
+                )
+
+            elif signup_password != signup_password_confirm:
+
+                st.error(
+                    "Passwords do not match."
+                )
+
+            elif len(signup_password) < 6:
+
+                st.error(
+                    "Password must be at least 6 characters."
+                )
+
+            else:
+
+                try:
+
+                    response = signup_user(
+                        signup_email,
+                        signup_password
+                    )
+
+                    if response.user is not None:
+
+                        if response.session is not None:
+
+                            st.session_state.user = response.user
+
+                            st.success(
+                                "Account created successfully!"
+                            )
+
+                            st.rerun()
+
+                        else:
+
+                            st.success(
+                                "Account created! "
+                                "Please check your email to confirm "
+                                "your account, then log in."
+                            )
+
+                    else:
+
+                        st.error(
+                            "Could not create the account."
+                        )
+
+                except Exception as error:
+
+                    st.error(
+                        f"Sign-up failed: {error}"
+                    )
+
+
+    st.stop()
+
+
+# =========================================================
+# CURRENT USER
+# =========================================================
+
+user = st.session_state.user
+
+
+# =========================================================
+# DATABASE FUNCTIONS
 # =========================================================
 
 def get_expenses():
 
-    cursor.execute("""
-        SELECT id, date, category, description, amount
-        FROM expenses
-        ORDER BY date DESC, id DESC
-    """)
+    response = (
+        supabase
+        .table("expenses")
+        .select(
+            "id, expense_date, category, description, amount"
+        )
+        .eq("user_id", user.id)
+        .order("expense_date", desc=True)
+        .order("id", desc=True)
+        .execute()
+    )
 
-    return cursor.fetchall()
+    expenses = []
+
+    for row in response.data:
+
+        expenses.append(
+            (
+                row["id"],
+                row["expense_date"],
+                row["category"],
+                row.get("description") or "",
+                float(row["amount"])
+            )
+        )
+
+    return expenses
 
 
 def get_total():
 
-    cursor.execute("""
-        SELECT COALESCE(SUM(amount), 0)
-        FROM expenses
-    """)
+    expenses = get_expenses()
 
-    return cursor.fetchone()[0]
+    return sum(
+        expense[4]
+        for expense in expenses
+    )
 
 
 def add_expense(
@@ -91,45 +369,50 @@ def add_expense(
     amount
 ):
 
-    cursor.execute(
-        """
-        INSERT INTO expenses
-        (date, category, description, amount)
-        VALUES (?, ?, ?, ?)
-        """,
-        (
-            str(expense_date),
-            category,
-            description,
-            amount
-        )
-    )
-
-    conn.commit()
+    supabase.table("expenses").insert({
+        "user_id": user.id,
+        "expense_date": str(expense_date),
+        "category": category,
+        "description": description,
+        "amount": amount
+    }).execute()
 
 
 def delete_expense(expense_id):
 
-    cursor.execute(
-        "DELETE FROM expenses WHERE id = ?",
-        (expense_id,)
+    (
+        supabase
+        .table("expenses")
+        .delete()
+        .eq("id", expense_id)
+        .eq("user_id", user.id)
+        .execute()
     )
 
-    conn.commit()
 
+# =========================================================
+# GEMMA
+# =========================================================
 
 def ask_gemma(question):
 
     expenses = get_expenses()
 
     if not expenses:
+
         return "There are no expenses to analyze yet."
 
     expense_text = ""
 
     for expense in expenses:
 
-        expense_id, expense_date, category, description, amount = expense
+        (
+            expense_id,
+            expense_date,
+            category,
+            description,
+            amount
+        ) = expense
 
         expense_text += (
             f"Date: {expense_date} | "
@@ -180,12 +463,38 @@ st.write(
 
 
 # =========================================================
+# USER INFORMATION
+# =========================================================
+
+user_col1, user_col2 = st.columns(
+    [4, 1]
+)
+
+with user_col1:
+
+    st.caption(
+        f"Logged in as: {user.email}"
+    )
+
+with user_col2:
+
+    if st.button(
+        "Logout"
+    ):
+
+        logout_user()
+
+
+# =========================================================
 # SUMMARY
 # =========================================================
 
 expenses = get_expenses()
 
-total = get_total()
+total = sum(
+    expense[4]
+    for expense in expenses
+)
 
 number_of_expenses = len(expenses)
 
@@ -284,18 +593,26 @@ if st.button(
 
     else:
 
-        add_expense(
-            expense_date,
-            category,
-            description,
-            amount
-        )
+        try:
 
-        st.success(
-            "Expense added successfully!"
-        )
+            add_expense(
+                expense_date,
+                category,
+                description,
+                amount
+            )
 
-        st.rerun()
+            st.success(
+                "Expense added successfully!"
+            )
+
+            st.rerun()
+
+        except Exception as error:
+
+            st.error(
+                f"Could not add expense: {error}"
+            )
 
 
 st.divider()
@@ -319,11 +636,13 @@ else:
 
     for expense in expenses:
 
-        expense_id = expense[0]
-        expense_date = expense[1]
-        category = expense[2]
-        description = expense[3]
-        amount = expense[4]
+        (
+            expense_id,
+            expense_date,
+            category,
+            description,
+            amount
+        ) = expense
 
         col1, col2, col3, col4, col5 = st.columns(
             [1.2, 1.5, 2, 1.2, 1]
@@ -360,11 +679,19 @@ else:
                 key=f"delete_{expense_id}"
             ):
 
-                delete_expense(
-                    expense_id
-                )
+                try:
 
-                st.rerun()
+                    delete_expense(
+                        expense_id
+                    )
+
+                    st.rerun()
+
+                except Exception as error:
+
+                    st.error(
+                        f"Could not delete expense: {error}"
+                    )
 
 
 st.divider()
@@ -376,14 +703,25 @@ st.divider()
 
 st.header("📊 Spending by Category")
 
-cursor.execute("""
-    SELECT category, SUM(amount)
-    FROM expenses
-    GROUP BY category
-    ORDER BY SUM(amount) DESC
-""")
+category_totals = {}
 
-category_data = cursor.fetchall()
+for expense in expenses:
+
+    category = expense[2]
+    amount = expense[4]
+
+    category_totals[category] = (
+        category_totals.get(category, 0)
+        + amount
+    )
+
+
+category_data = sorted(
+    category_totals.items(),
+    key=lambda item: item[1],
+    reverse=True
+)
+
 
 if category_data:
 
@@ -393,19 +731,23 @@ if category_data:
             f"**{category}** — ₹{amount:,.2f}"
         )
 
-        st.progress(
-            min(
-                int(
-                    (amount / total) * 100
-                ),
-                100
+        percentage = 0
+
+        if total > 0:
+
+            percentage = int(
+                (amount / total) * 100
             )
+
+        st.progress(
+            min(percentage, 100)
         )
 
 else:
 
     st.info(
-        "Category information will appear here after you add expenses."
+        "Category information will appear here "
+        "after you add expenses."
     )
 
 
@@ -422,11 +764,6 @@ if not gemma_available:
 
     st.warning(
         "Gemma is not configured yet."
-    )
-
-    st.write(
-        "Your local Gemma API test works, but Streamlit needs "
-        "the API key in its secrets file."
     )
 
 else:
@@ -485,5 +822,5 @@ else:
 st.divider()
 
 st.caption(
-    "Expense Tracker • Powered by Python, Streamlit and Gemma"
+    "Expense Tracker • Powered by Python, Streamlit, Supabase and Gemma"
 )
